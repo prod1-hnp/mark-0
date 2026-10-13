@@ -378,16 +378,11 @@ async function extractPdfPages(sourceFilePath, pageIndices) {
 }
 
 // Calculate price per page:
-// - Black & White (1-sided or duplex): ₹2/page (duplex does NOT double for B&W)
-// - Color (1-sided): ₹5/page
-// - Color (2-sided duplex): ₹10/page (doubled for color duplex)
+// - Black & White (1-sided or duplex): ₹2/page
+// - Color (1-sided or duplex): ₹5/page (2-sided duplex sheet = ₹10/sheet, ₹5/page side)
 function getPricePerPage(isColor, isDuplex) {
   const color = isColor === true || isColor === 'true';
-  const duplex = isDuplex === true || isDuplex === 'true';
-  if (color) {
-    return duplex ? 10 : 5;
-  }
-  return 2;
+  return color ? 5 : 2;
 }
 
 // Step 1: upload the files and count pages (if PDF)

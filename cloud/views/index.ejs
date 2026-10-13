@@ -105,6 +105,10 @@
                             <span class="pricing-label">Pages to Print</span>
                             <span class="pricing-value" id="pricingTotalPages">0</span>
                         </div>
+                        <div class="pricing-row" id="pricingSheetsRow" style="display: none;">
+                            <span class="pricing-label">Paper Sheets Used</span>
+                            <span class="pricing-value" id="pricingTotalSheets" style="color: #059669; font-weight: 600;">0 sheets</span>
+                        </div>
                         <div class="pricing-row">
                             <span class="pricing-label">Total Amount</span>
                             <span class="pricing-value">₹<span id="totalAmount">0</span></span>
@@ -583,16 +587,11 @@
         }
 
         // Calculate price per page:
-        // - Black & White (1-sided or duplex): ₹2/page (duplex does NOT double for B&W)
-        // - Color (1-sided): ₹5/page
-        // - Color (2-sided duplex): ₹10/page (doubled for color duplex)
+        // - Black & White: ₹2/page
+        // - Color: ₹5/page (2-sided duplex sheet = ₹10/sheet, ₹5/page side)
         function getPricePerPage(isColor, isDuplex) {
             const color = isColor === true || isColor === 'true';
-            const duplex = isDuplex === true || isDuplex === 'true';
-            if (color) {
-                return duplex ? 10 : 5;
-            }
-            return 2;
+            return color ? 5 : 2;
         }
 
         // Render file config cards
@@ -708,17 +707,23 @@
                             <label style="font-size: 0.875rem; font-weight: 500;">Color Mode:</label>
                             <select onchange="updateFileColor(${index}, this.value === 'true')" class="form-control" style="padding: 0.4rem; height: auto;">
                                 <option value="false" ${!file.color ? 'selected' : ''}>Black & White (₹2/page)</option>
-                                <option value="true" ${file.color ? 'selected' : ''}>Color (${file.duplex ? '₹10/page - Duplex 2x' : '₹5/page'})</option>
+                                <option value="true" ${file.color ? 'selected' : ''}>Color (₹5/page)</option>
                             </select>
                         </div>
                         <div style="display: flex; align-items: center; gap: 0.5rem;">
                             <label style="font-size: 0.875rem; font-weight: 500;"><i class="fas fa-copy" style="margin-right: 0.25rem;"></i>Sides:</label>
                             <select onchange="updateFileDuplex(${index}, this.value === 'true')" class="form-control" style="padding: 0.4rem; height: auto;">
-                                <option value="false" ${!file.duplex ? 'selected' : ''}>1-Sided</option>
-                                <option value="true" ${file.duplex ? 'selected' : ''}>2-Sided Duplex (${file.color ? '₹10/page - 2x' : '₹2/page'})</option>
+                                <option value="false" ${!file.duplex ? 'selected' : ''}>1-Sided (${file.printPageCount !== undefined ? file.printPageCount : file.pageCount} sheets)</option>
+                                <option value="true" ${file.duplex ? 'selected' : ''}>2-Sided Duplex (${Math.ceil((file.printPageCount !== undefined ? file.printPageCount : file.pageCount) / 2)} sheets)</option>
                             </select>
                         </div>
                     </div>
+                    ${file.duplex && (file.printPageCount !== undefined ? file.printPageCount : file.pageCount) > 1 ? `
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.45rem 0.8rem; background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; font-size: 0.82rem; color: #166534;">
+                            <i class="fas fa-layer-group" style="color: #15803d;"></i>
+                            <span><b>${file.printPageCount !== undefined ? file.printPageCount : file.pageCount} pages</b> will print on <b>${Math.ceil((file.printPageCount !== undefined ? file.printPageCount : file.pageCount) / 2)} sheets</b> of paper (back-to-back duplex)</span>
+                        </div>
+                    ` : ''}
                 `;
                 filesConfigList.appendChild(card);
             });
@@ -864,11 +869,35 @@
             const totalPrintPages = state.files.reduce((sum, f) => sum + (f.printPageCount !== undefined ? f.printPageCount : f.pageCount), 0);
             const totalDocPages = state.files.reduce((sum, f) => sum + f.pageCount, 0);
             const totalCopies = state.files.reduce((sum, f) => sum + f.copies, 0);
+            const totalSheets = state.files.reduce((sum, f) => {
+                const p = (f.printPageCount !== undefined ? f.printPageCount : f.pageCount) || 1;
+                const s = f.duplex ? Math.ceil(p / 2) : p;
+                return sum + (s * (f.copies || 1));
+            }, 0);
+            const hasDuplex = state.files.some(f => f.duplex);
 
             if (pricingTotalPages) {
-                pricingTotalPages.textContent = totalPrintPages !== totalDocPages 
-                    ? `${totalPrintPages} (of ${totalDocPages} total)`
-                    : `${totalPrintPages}`;
+                if (hasDuplex) {
+                    pricingTotalPages.textContent = `${totalPrintPages} pages (${totalSheets} sheet${totalSheets !== 1 ? 's' : ''})`;
+                } else {
+                    pricingTotalPages.textContent = totalPrintPages !== totalDocPages 
+                        ? `${totalPrintPages} pages (of ${totalDocPages} total)`
+                        : `${totalPrintPages} pages`;
+                }
+            }
+
+            const sheetsRow = document.getElementById('pricingSheetsRow');
+            const sheetsEl = document.getElementById('pricingTotalSheets');
+            if (sheetsRow && sheetsEl) {
+                if (hasDuplex) {
+                    sheetsRow.style.display = 'flex';
+                    const savedSheets = (totalPrintPages * totalCopies) - totalSheets;
+                    sheetsEl.textContent = savedSheets > 0 
+                        ? `${totalSheets} sheet${totalSheets !== 1 ? 's' : ''} (Duplex saves ${savedSheets} paper${savedSheets !== 1 ? 's' : ''}!)`
+                        : `${totalSheets} sheet${totalSheets !== 1 ? 's' : ''}`;
+                } else {
+                    sheetsRow.style.display = 'none';
+                }
             }
 
             document.getElementById('totalAmount').textContent = totalAmount;
@@ -876,9 +905,11 @@
             document.getElementById('summaryFile').textContent = `${state.files.length} Files`;
             document.getElementById('summaryPrinter').textContent = state.printerName;
             
-            const pagesSummaryText = totalPrintPages !== totalDocPages 
-                ? `${totalPrintPages} pages (filtered from ${totalDocPages} total)`
-                : `${totalPrintPages} total pages`;
+            const pagesSummaryText = hasDuplex 
+                ? `${totalPrintPages} pages (${totalSheets} sheets of paper)`
+                : (totalPrintPages !== totalDocPages 
+                    ? `${totalPrintPages} pages (filtered from ${totalDocPages} total)`
+                    : `${totalPrintPages} total pages`);
 
             document.getElementById('summaryPages').textContent = pagesSummaryText;
             document.getElementById('summaryCopies').textContent = `${totalCopies} total copies`;
@@ -888,15 +919,16 @@
             if (breakdownEl) {
                 breakdownEl.innerHTML = state.files.map(f => {
                     const pagesToPrint = f.printPageCount !== undefined ? f.printPageCount : f.pageCount;
+                    const sheetsThis = f.duplex ? Math.ceil(pagesToPrint / 2) : pagesToPrint;
                     const rangeLabel = (f.pageRange && f.pageRange !== 'all') ? `Pages: ${f.pageRange}` : 'All pages';
                     const rate = getPricePerPage(f.color, f.duplex);
                     const modeLabel = f.color 
-                        ? (f.duplex ? 'Color 2-Sided (₹10/p)' : 'Color 1-Sided (₹5/p)') 
-                        : (f.duplex ? 'B&W 2-Sided (₹2/p)' : 'B&W 1-Sided (₹2/p)');
+                        ? (f.duplex ? `Color 2-Sided (${sheetsThis} sheets · ₹5/p)` : 'Color 1-Sided (₹5/p)') 
+                        : (f.duplex ? `B&W 2-Sided (${sheetsThis} sheets · ₹2/p)` : 'B&W 1-Sided (₹2/p)');
                     const cost = (pagesToPrint * rate) * f.copies;
                     return `
                         <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-secondary); padding: 0.15rem 0;">
-                            <span><b>${f.originalName}</b> <span style="font-size: 0.8rem; opacity: 0.85;">(${rangeLabel} · ${pagesToPrint} pgs · ${modeLabel} · ${f.copies}x)</span></span>
+                            <span><b>${f.originalName}</b> <span style="font-size: 0.8rem; opacity: 0.85;">(${rangeLabel} · ${pagesToPrint} pgs [${sheetsThis} sheets] · ${modeLabel} · ${f.copies}x)</span></span>
                             <span style="font-weight: 600; color: var(--text-primary);">₹${cost}</span>
                         </div>
                     `;
@@ -990,8 +1022,18 @@
                     document.getElementById('successFile').textContent = `${state.files.length} Files`;
                     document.getElementById('successPrinter').textContent = state.printerName;
                     const totalPrintPages = state.files.reduce((sum, f) => sum + (f.printPageCount !== undefined ? f.printPageCount : f.pageCount), 0);
+                    const totalSheets = state.files.reduce((sum, f) => {
+                        const p = (f.printPageCount !== undefined ? f.printPageCount : f.pageCount) || 1;
+                        const s = f.duplex ? Math.ceil(p / 2) : p;
+                        return sum + (s * (f.copies || 1));
+                    }, 0);
+                    const hasDuplex = state.files.some(f => f.duplex);
                     const pagesEl = document.getElementById('successPages');
-                    if (pagesEl) pagesEl.textContent = `${totalPrintPages} pages`;
+                    if (pagesEl) {
+                        pagesEl.textContent = hasDuplex 
+                            ? `${totalPrintPages} pages (${totalSheets} sheets)`
+                            : `${totalPrintPages} pages`;
+                    }
                     document.getElementById('successCopies').textContent = `${state.files.reduce((sum, f) => sum + f.copies, 0)} copies`;
                     document.getElementById('successAmount').textContent = '0 (Free - Testing Phase)';
 
@@ -1087,8 +1129,18 @@
                     document.getElementById('successFile').textContent = `${state.files.length} Files`;
                     document.getElementById('successPrinter').textContent = state.printerName;
                     const totalPrintPages = state.files.reduce((sum, f) => sum + (f.printPageCount !== undefined ? f.printPageCount : f.pageCount), 0);
+                    const totalSheets = state.files.reduce((sum, f) => {
+                        const p = (f.printPageCount !== undefined ? f.printPageCount : f.pageCount) || 1;
+                        const s = f.duplex ? Math.ceil(p / 2) : p;
+                        return sum + (s * (f.copies || 1));
+                    }, 0);
+                    const hasDuplex = state.files.some(f => f.duplex);
                     const pagesEl = document.getElementById('successPages');
-                    if (pagesEl) pagesEl.textContent = `${totalPrintPages} pages`;
+                    if (pagesEl) {
+                        pagesEl.textContent = hasDuplex 
+                            ? `${totalPrintPages} pages (${totalSheets} sheets)`
+                            : `${totalPrintPages} pages`;
+                    }
                     document.getElementById('successCopies').textContent = `${state.files.reduce((sum, f) => sum + f.copies, 0)} copies`;
                     document.getElementById('successAmount').textContent = state.amount;
 
