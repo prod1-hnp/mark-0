@@ -340,8 +340,9 @@ async function printFile(filePath, copies = 1, isColor = false, isDuplex = false
             console.log(`Printing copy ${i} of ${copies}...`);
             if (newExt === '.txt') {
                 if (os.type() === 'Windows_NT') {
+                    const printerArg = chosenPrinter ? `-Name "${chosenPrinter}"` : '';
                     await new Promise((resolve) => {
-                        exec(`powershell.exe -Command "Get-Content -Path '${actualFileToPrint}' | Out-Printer"`, () => resolve());
+                        exec(`powershell.exe -Command "Get-Content -Path '${actualFileToPrint}' | Out-Printer ${printerArg}"`, () => resolve());
                     });
                 } else {
                     await new Promise((resolve, reject) => {
