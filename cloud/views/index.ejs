@@ -67,15 +67,15 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="printerName">Select Printer</label>
+                        <label for="printerName">
+                            Select Printer
+                            <span id="printerCount" style="font-size: 0.75rem; font-weight: 400; color: var(--text-secondary); margin-left: 0.5rem;"></span>
+                            <button type="button" id="refreshPrintersBtn" onclick="loadPrinters()" style="background: none; border: none; cursor: pointer; color: var(--primary); font-size: 0.85rem; margin-left: 0.25rem;" title="Refresh printer list">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
+                        </label>
                         <select id="printerName" class="form-control" required>
-                            <option value="">Choose a printer</option>
-                            <option value="HP LaserJet Pro MFP M329dw">HP LaserJet Pro MFP M329dw</option>
-                            <option value="HP-LaserJet-Pro">HP-LaserJet-Pro</option>
-                            <option value="Test-Printer">Test Printer</option>
-                            <option value="printer-01">Office Printer 01</option>
-                            <option value="printer-02">Office Printer 02</option>
-                            <option value="printer-03">Color Printer</option>
+                            <option value="">Loading printers...</option>
                         </select>
                         <small id="printerStatusHint" style="display: block; margin-top: 0.35rem; font-size: 0.8rem; color: var(--text-secondary);"></small>
                     </div>
@@ -100,6 +100,10 @@
                         <div class="pricing-row">
                             <span class="pricing-label">Total Files</span>
                             <span class="pricing-value" id="pricingTotalFiles">0</span>
+                        </div>
+                        <div class="pricing-row">
+                            <span class="pricing-label">Pages to Print</span>
+                            <span class="pricing-value" id="pricingTotalPages">0</span>
                         </div>
                         <div class="pricing-row">
                             <span class="pricing-label">Total Amount</span>
@@ -142,6 +146,7 @@
                             <span class="detail-label">Copies</span>
                             <span class="detail-value" id="summaryCopies">-</span>
                         </div>
+                        <div id="summaryFilesBreakdown" style="border-top: 1px dashed var(--border); padding-top: 0.75rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem;"></div>
                         <div class="detail-row" style="border-top: 2px solid var(--border); padding-top: 1rem; margin-top: 0.5rem;">
                             <span class="detail-label" style="font-size: 1.125rem; font-weight: 700;">Total</span>
                             <span class="detail-value" style="font-size: 1.5rem; color: var(--primary);">₹<span id="summaryTotal">0</span></span>
@@ -182,6 +187,10 @@
                             <div class="detail-row">
                                 <span class="detail-label">Printer</span>
                                 <span class="detail-value" id="successPrinter">-</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Pages</span>
+                                <span class="detail-value" id="successPages">-</span>
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Copies</span>
@@ -234,6 +243,7 @@
         const uploadAndNextBtn = document.getElementById('uploadAndNextBtn');
         const filesConfigList = document.getElementById('filesConfigList');
         const pricingTotalFiles = document.getElementById('pricingTotalFiles');
+        const pricingTotalPages = document.getElementById('pricingTotalPages');
         
         const backStep2Btn = document.getElementById('backStep2');
         const nextStep2Btn = document.getElementById('nextStep2');
@@ -242,6 +252,141 @@
         const testPrintStep3Btn = document.getElementById('testPrintStep3Btn');
         const payNowBtn = document.getElementById('payNowBtn');
         const printAnotherBtn = document.getElementById('printAnother');
+        const printerStatusHint = document.getElementById('printerStatusHint');
+        const printerCountEl = document.getElementById('printerCount');
+        const refreshPrintersBtn = document.getElementById('refreshPrintersBtn');
+
+        // ═══════════════════════════════════════════
+        // Dynamic Printer Loading
+        // ═══════════════════════════════════════════
+
+        let cachedPrinterData = null;
+
+        async function loadPrinters() {
+            // Show loading state
+            const refreshIcon = refreshPrintersBtn.querySelector('i');
+            refreshIcon.classList.add('fa-spin');
+            printerSelect.disabled = true;
+
+            try {
+                const response = await fetch('/api/printers');
+                const data = await response.json();
+                cachedPrinterData = data;
+
+                const previousValue = printerSelect.value;
+                printerSelect.innerHTML = '';
+
+                if (!data.printers || data.printers.length === 0) {
+                    // No printers connected
+                    printerSelect.innerHTML = '<option value="">No printers detected</option>';
+                    printerCountEl.textContent = '(0 detected)';
+                    printerStatusHint.innerHTML = '<i class="fas fa-exclamation-triangle" style="color: #e67e22;"></i> No printer agents are connected. Start the printer agent on the target PC.';
+                } else {
+                    // Default option
+                    const defaultOpt = document.createElement('option');
+                    defaultOpt.value = '';
+                    defaultOpt.textContent = 'Choose a printer';
+                    printerSelect.appendChild(defaultOpt);
+
+                    // Filter out virtual/PDF printers for cleanliness
+                    const virtualKeywords = ['print to pdf', 'onenote', 'xps', 'fax', 'microsoft print'];
+                    const realPrinters = [];
+                    const virtualPrinters = [];
+
+                    data.printers.forEach(p => {
+                        const isVirtual = virtualKeywords.some(k => p.name.toLowerCase().includes(k));
+                        if (isVirtual) {
+                            virtualPrinters.push(p);
+                        } else {
+                            realPrinters.push(p);
+                        }
+                    });
+
+                    // Add real printers first
+                    if (realPrinters.length > 0) {
+                        const groupReal = document.createElement('optgroup');
+                        groupReal.label = '🖨️ Physical Printers';
+                        realPrinters.forEach(p => {
+                            const opt = document.createElement('option');
+                            opt.value = p.name;
+                            const statusIcon = getStatusIcon(p.status);
+                            const defaultBadge = p.isDefault ? ' ★' : '';
+                            opt.textContent = `${statusIcon} ${p.name}${defaultBadge}`;
+                            if (p.status === 'offline' || p.status === 'error') {
+                                opt.style.color = '#999';
+                            }
+                            groupReal.appendChild(opt);
+                        });
+                        printerSelect.appendChild(groupReal);
+                    }
+
+                    // Add virtual printers in separate group
+                    if (virtualPrinters.length > 0) {
+                        const groupVirtual = document.createElement('optgroup');
+                        groupVirtual.label = '💻 Virtual Printers';
+                        virtualPrinters.forEach(p => {
+                            const opt = document.createElement('option');
+                            opt.value = p.name;
+                            opt.textContent = `${p.name}`;
+                            groupVirtual.appendChild(opt);
+                        });
+                        printerSelect.appendChild(groupVirtual);
+                    }
+
+                    // Update count
+                    const totalCount = data.printers.length;
+                    const agentCount = data.agents ? data.agents.length : 0;
+                    printerCountEl.textContent = `(${totalCount} detected across ${agentCount} agent${agentCount !== 1 ? 's' : ''})`;
+                    printerStatusHint.innerHTML = '<i class="fas fa-check-circle" style="color: #27ae60;"></i> Printers loaded from connected agents';
+
+                    // Restore previous selection if still available
+                    if (previousValue) {
+                        const exists = Array.from(printerSelect.options).some(o => o.value === previousValue);
+                        if (exists) {
+                            printerSelect.value = previousValue;
+                        }
+                    }
+
+                    // Auto-select default printer if nothing selected
+                    if (!printerSelect.value) {
+                        const defaultPrinter = data.printers.find(p => p.isDefault);
+                        if (defaultPrinter) {
+                            printerSelect.value = defaultPrinter.name;
+                            state.printerName = defaultPrinter.name;
+                        }
+                    }
+                }
+
+                checkStep1Complete();
+            } catch (err) {
+                console.error('Failed to load printers:', err);
+                printerSelect.innerHTML = '<option value="">Failed to load printers</option>';
+                printerCountEl.textContent = '';
+                printerStatusHint.innerHTML = '<i class="fas fa-times-circle" style="color: #e74c3c;"></i> Could not connect to server';
+            } finally {
+                refreshIcon.classList.remove('fa-spin');
+                printerSelect.disabled = false;
+            }
+        }
+
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'ready': return '🟢';
+                case 'busy': case 'printing': return '🟡';
+                case 'offline': return '🔴';
+                case 'error': return '❌';
+                case 'paused': return '⏸️';
+                case 'paper_issue': return '📄';
+                case 'low_ink': return '🖋️';
+                default: return '⚪';
+            }
+        }
+
+        // Load printers on page load
+        loadPrinters();
+
+        // Auto-refresh printer list every 30 seconds
+        setInterval(loadPrinters, 30000);
 
         // Upload area click
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -345,7 +490,11 @@
                             ...f,
                             copies: 1,
                             color: autoColor,
-                            duplex: false
+                            duplex: false,
+                            pageRangeMode: 'all',
+                            pageRange: 'all',
+                            printPageCount: f.pageCount || 1,
+                            pageRangeError: null
                         };
                     });
                     renderFilesConfigList();
@@ -366,13 +515,94 @@
             }
         }
 
+        // Parse and validate page ranges on client side (e.g. 1-4, 6-10)
+        function parseClientPageRange(rangeStr, totalPages) {
+            if (!rangeStr || typeof rangeStr !== 'string' || !rangeStr.trim() || rangeStr.trim().toLowerCase() === 'all') {
+                return {
+                    valid: true,
+                    count: totalPages,
+                    normalized: 'all',
+                    error: null
+                };
+            }
+
+            const raw = rangeStr.trim();
+            const parts = raw.split(/[,;]/);
+            const selectedPages = new Set();
+
+            for (let part of parts) {
+                part = part.trim();
+                if (!part) continue;
+
+                const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+                const singleMatch = part.match(/^(\d+)$/);
+
+                if (rangeMatch) {
+                    const start = parseInt(rangeMatch[1], 10);
+                    const end = parseInt(rangeMatch[2], 10);
+
+                    if (start < 1) {
+                        return { valid: false, error: `Page ${start} must be 1 or higher` };
+                    }
+                    if (end > totalPages) {
+                        return { valid: false, error: `Page ${end} exceeds total pages (${totalPages})` };
+                    }
+                    if (start > end) {
+                        return { valid: false, error: `Invalid range "${part}": start (${start}) is greater than end (${end})` };
+                    }
+                    for (let p = start; p <= end; p++) {
+                        selectedPages.add(p);
+                    }
+                } else if (singleMatch) {
+                    const page = parseInt(singleMatch[1], 10);
+                    if (page < 1) {
+                        return { valid: false, error: `Page ${page} must be 1 or higher` };
+                    }
+                    if (page > totalPages) {
+                        return { valid: false, error: `Page ${page} exceeds total pages (${totalPages})` };
+                    }
+                    selectedPages.add(page);
+                } else {
+                    return { valid: false, error: `Invalid format "${part}". Use e.g. 1-4, 6-10` };
+                }
+            }
+
+            if (selectedPages.size === 0) {
+                return { valid: false, error: 'Please enter at least one valid page' };
+            }
+
+            const sortedPages = Array.from(selectedPages).sort((a, b) => a - b);
+            const isAll = sortedPages.length === totalPages && sortedPages[0] === 1 && sortedPages[sortedPages.length - 1] === totalPages;
+
+            return {
+                valid: true,
+                count: sortedPages.length,
+                normalized: isAll ? 'all' : raw,
+                error: null
+            };
+        }
+
+        // Calculate price per page:
+        // - Black & White (1-sided or duplex): ₹2/page (duplex does NOT double for B&W)
+        // - Color (1-sided): ₹5/page
+        // - Color (2-sided duplex): ₹10/page (doubled for color duplex)
+        function getPricePerPage(isColor, isDuplex) {
+            const color = isColor === true || isColor === 'true';
+            const duplex = isDuplex === true || isDuplex === 'true';
+            if (color) {
+                return duplex ? 10 : 5;
+            }
+            return 2;
+        }
+
         // Render file config cards
         function renderFilesConfigList() {
             filesConfigList.innerHTML = '';
             
             state.files.forEach((file, index) => {
                 const card = document.createElement('div');
-                card.style.cssText = 'background: var(--bg-main); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem;';
+                card.id = `fileCard_${index}`;
+                card.style.cssText = 'background: var(--bg-main); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: var(--shadow-sm);';
                 
                 const colorHint = file.isColorDocument === false
                     ? `<div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.75rem; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; font-size: 0.8rem; color: #92400e;">
@@ -384,14 +614,89 @@
                        </div>`
                     : '';
 
+                // Page Range UI section
+                const isMultiPage = file.pageCount > 1;
+                const pageRangeSection = isMultiPage ? `
+                    <div style="background: rgba(255, 255, 255, 0.75); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.6rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                            <label style="font-size: 0.875rem; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 0.4rem;">
+                                <i class="fas fa-file-lines" style="color: var(--primary);"></i> Pages to Print:
+                            </label>
+                            <div style="display: inline-flex; background: #e5e7eb; border-radius: 6px; padding: 2px;">
+                                <button type="button" 
+                                    onclick="setPageRangeMode(${index}, 'all')"
+                                    style="border: none; border-radius: 5px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.2s; background: ${file.pageRangeMode === 'all' ? 'white' : 'transparent'}; color: ${file.pageRangeMode === 'all' ? 'var(--primary)' : 'var(--text-secondary)'}; box-shadow: ${file.pageRangeMode === 'all' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};">
+                                    All Pages (${file.pageCount})
+                                </button>
+                                <button type="button" 
+                                    onclick="setPageRangeMode(${index}, 'custom')"
+                                    style="border: none; border-radius: 5px; padding: 4px 10px; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.2s; background: ${file.pageRangeMode === 'custom' ? 'white' : 'transparent'}; color: ${file.pageRangeMode === 'custom' ? 'var(--primary)' : 'var(--text-secondary)'}; box-shadow: ${file.pageRangeMode === 'custom' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'};">
+                                    Custom Range
+                                </button>
+                            </div>
+                        </div>
+
+                        ${file.pageRangeMode === 'custom' ? `
+                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <div style="position: relative; flex: 1;">
+                                    <i class="fas fa-bookmark" style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); font-size: 0.85rem;"></i>
+                                    <input type="text" 
+                                        id="pageRangeInput_${index}"
+                                        class="form-control" 
+                                        value="${file.pageRange && file.pageRange !== 'all' ? file.pageRange : ''}"
+                                        placeholder="e.g. 1-4, 6-10 or 1, 3, 5"
+                                        oninput="handlePageRangeInput(${index}, this.value)"
+                                        style="padding-left: 2rem; font-size: 0.875rem; height: 38px; border-color: ${file.pageRangeError ? 'var(--error)' : 'var(--border)'}; background: white;">
+                                </div>
+                                <button type="button" 
+                                    onclick="clearPageRange(${index})" 
+                                    title="Reset to all pages"
+                                    style="background: white; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 0.8rem; cursor: pointer; color: var(--text-secondary); font-weight: 500;">
+                                    Reset
+                                </button>
+                            </div>
+
+                            <div style="display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center;">
+                                <span style="font-size: 0.75rem; color: var(--text-secondary); margin-right: 0.2rem;">Quick:</span>
+                                <button type="button" onclick="applyPresetRange(${index}, '1-${Math.min(5, file.pageCount)}')" style="border: 1px solid var(--border); background: white; border-radius: 4px; padding: 2px 7px; font-size: 0.75rem; cursor: pointer; color: var(--text-secondary);">1-${Math.min(5, file.pageCount)}</button>
+                                <button type="button" onclick="applyPresetRange(${index}, 'odd')" style="border: 1px solid var(--border); background: white; border-radius: 4px; padding: 2px 7px; font-size: 0.75rem; cursor: pointer; color: var(--text-secondary);">Odd pages</button>
+                                <button type="button" onclick="applyPresetRange(${index}, 'even')" style="border: 1px solid var(--border); background: white; border-radius: 4px; padding: 2px 7px; font-size: 0.75rem; cursor: pointer; color: var(--text-secondary);">Even pages</button>
+                            </div>
+
+                            <div id="pageRangeFeedback_${index}" style="font-size: 0.8rem;">
+                                ${file.pageRangeError 
+                                    ? `<span style="color: var(--error); display: flex; align-items: center; gap: 0.3rem;"><i class="fas fa-exclamation-circle"></i> ${file.pageRangeError}</span>`
+                                    : `<span style="color: #10b981; font-weight: 500; display: flex; align-items: center; gap: 0.3rem;"><i class="fas fa-check-circle"></i> <b>${file.printPageCount}</b> of ${file.pageCount} pages selected (${file.pageRange === 'all' ? 'All' : file.pageRange})</span>`
+                                }
+                            </div>
+                        </div>
+                        ` : `
+                        <div style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem;">
+                            <i class="fas fa-check-circle" style="color: #10b981;"></i> Printing all ${file.pageCount} pages (1 to ${file.pageCount})
+                        </div>
+                        `}
+                    </div>
+                ` : `
+                    <div style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0;">
+                        <i class="fas fa-file"></i> Single page document
+                    </div>
+                `;
+
                 card.innerHTML = `
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div style="font-weight: 600; color: var(--text-primary);"><i class="fas fa-file-pdf" style="color: var(--primary); margin-right: 0.5rem;"></i> ${file.originalName}</div>
-                        <div style="font-size: 0.875rem; color: var(--text-secondary);">${file.pageCount} pages</div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                        <div style="font-weight: 600; color: var(--text-primary); display: flex; align-items: center;">
+                            <i class="fas fa-file-pdf" style="color: var(--primary); margin-right: 0.5rem; font-size: 1.1rem;"></i> 
+                            ${file.originalName}
+                        </div>
+                        <div style="font-size: 0.875rem; color: var(--text-secondary); background: rgba(0,0,0,0.05); padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: 500;">
+                            ${file.pageCount} page${file.pageCount !== 1 ? 's' : ''} total
+                        </div>
                     </div>
                     ${colorHint}
-                    <div style="display: flex; gap: 2rem; align-items: center; border-top: 1px solid var(--border); padding-top: 1rem; flex-wrap: wrap;">
-                        <div style="display: flex; align-items: center; gap: 1rem;">
+                    ${pageRangeSection}
+                    <div style="display: flex; gap: 1.5rem; align-items: center; border-top: 1px solid var(--border); padding-top: 1rem; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
                             <label style="font-size: 0.875rem; font-weight: 500;">Copies:</label>
                             <div style="display: flex; gap: 0.5rem; align-items: center;">
                                 <button type="button" class="copies-btn" style="width: 32px; height: 32px;" onclick="updateFileCopies(${index}, -1)"><i class="fas fa-minus"></i></button>
@@ -403,14 +708,14 @@
                             <label style="font-size: 0.875rem; font-weight: 500;">Color Mode:</label>
                             <select onchange="updateFileColor(${index}, this.value === 'true')" class="form-control" style="padding: 0.4rem; height: auto;">
                                 <option value="false" ${!file.color ? 'selected' : ''}>Black & White (₹2/page)</option>
-                                <option value="true" ${file.color ? 'selected' : ''}>Color (₹5/page)</option>
+                                <option value="true" ${file.color ? 'selected' : ''}>Color (${file.duplex ? '₹10/page - Duplex 2x' : '₹5/page'})</option>
                             </select>
                         </div>
                         <div style="display: flex; align-items: center; gap: 0.5rem;">
                             <label style="font-size: 0.875rem; font-weight: 500;"><i class="fas fa-copy" style="margin-right: 0.25rem;"></i>Sides:</label>
                             <select onchange="updateFileDuplex(${index}, this.value === 'true')" class="form-control" style="padding: 0.4rem; height: auto;">
                                 <option value="false" ${!file.duplex ? 'selected' : ''}>1-Sided</option>
-                                <option value="true" ${file.duplex ? 'selected' : ''}>2-Sided (Duplex)</option>
+                                <option value="true" ${file.duplex ? 'selected' : ''}>2-Sided Duplex (${file.color ? '₹10/page - 2x' : '₹2/page'})</option>
                             </select>
                         </div>
                     </div>
@@ -418,6 +723,82 @@
                 filesConfigList.appendChild(card);
             });
             updatePricing();
+        }
+
+        window.setPageRangeMode = (index, mode) => {
+            const file = state.files[index];
+            file.pageRangeMode = mode;
+            if (mode === 'all') {
+                file.pageRange = 'all';
+                file.printPageCount = file.pageCount || 1;
+                file.pageRangeError = null;
+            } else {
+                if (!file.pageRange || file.pageRange === 'all') {
+                    file.pageRange = `1-${Math.min(5, file.pageCount)}`;
+                    const res = parseClientPageRange(file.pageRange, file.pageCount);
+                    file.printPageCount = res.count;
+                    file.pageRangeError = null;
+                }
+            }
+            renderFilesConfigList();
+        };
+
+        window.handlePageRangeInput = (index, val) => {
+            const file = state.files[index];
+            file.pageRange = val;
+            const res = parseClientPageRange(val, file.pageCount);
+            if (res.valid) {
+                file.printPageCount = res.count;
+                file.pageRangeError = null;
+            } else {
+                file.pageRangeError = res.error;
+            }
+            updatePageRangeCardUI(index);
+            updatePricing();
+        };
+
+        window.applyPresetRange = (index, preset) => {
+            const file = state.files[index];
+            file.pageRangeMode = 'custom';
+            if (preset === 'odd') {
+                const odds = [];
+                for (let i = 1; i <= file.pageCount; i += 2) odds.push(i);
+                file.pageRange = odds.join(', ');
+            } else if (preset === 'even') {
+                const evens = [];
+                for (let i = 2; i <= file.pageCount; i += 2) evens.push(i);
+                file.pageRange = evens.join(', ');
+            } else {
+                file.pageRange = preset;
+            }
+            const res = parseClientPageRange(file.pageRange, file.pageCount);
+            if (res.valid) {
+                file.printPageCount = res.count;
+                file.pageRangeError = null;
+            } else {
+                file.pageRangeError = res.error;
+            }
+            renderFilesConfigList();
+        };
+
+        window.clearPageRange = (index) => {
+            setPageRangeMode(index, 'all');
+        };
+
+        function updatePageRangeCardUI(index) {
+            const file = state.files[index];
+            const input = document.getElementById(`pageRangeInput_${index}`);
+            if (input) {
+                input.style.borderColor = file.pageRangeError ? 'var(--error)' : 'var(--border)';
+            }
+            const feedback = document.getElementById(`pageRangeFeedback_${index}`);
+            if (feedback) {
+                if (file.pageRangeError) {
+                    feedback.innerHTML = `<span style="color: var(--error); display: flex; align-items: center; gap: 0.3rem;"><i class="fas fa-exclamation-circle"></i> ${file.pageRangeError}</span>`;
+                } else {
+                    feedback.innerHTML = `<span style="color: #10b981; font-weight: 500; display: flex; align-items: center; gap: 0.3rem;"><i class="fas fa-check-circle"></i> <b>${file.printPageCount}</b> of ${file.pageCount} pages selected (${file.pageRange === 'all' ? 'All' : file.pageRange})</span>`;
+                }
+            }
         }
 
         window.updateFileCopies = (index, change) => {
@@ -435,7 +816,7 @@
                 showNotification('⚠️ Grayscale file', `"${file.originalName}" was detected as B&W. Selecting Color will cost ₹5/page instead of ₹2/page with no visual difference.`, 'error');
             }
             file.color = isColor;
-            updatePricing();
+            renderFilesConfigList();
         };
 
         window.updateFileDuplex = (index, isDuplex) => {
@@ -465,23 +846,75 @@
 
         function updatePricing() {
             let totalAmount = 0;
+            let anyError = false;
+
             state.files.forEach(file => {
-                const pricePerPage = file.color ? 5 : 2;
-                totalAmount += (file.pageCount * pricePerPage) * file.copies;
+                const pagesToPrint = file.printPageCount !== undefined ? file.printPageCount : file.pageCount;
+                const pricePerPage = getPricePerPage(file.color, file.duplex);
+                totalAmount += (pagesToPrint * pricePerPage) * file.copies;
+
+                if (file.pageRangeError) {
+                    anyError = true;
+                }
             });
             state.amount = totalAmount;
 
             pricingTotalFiles.textContent = state.files.length;
+            
+            const totalPrintPages = state.files.reduce((sum, f) => sum + (f.printPageCount !== undefined ? f.printPageCount : f.pageCount), 0);
+            const totalDocPages = state.files.reduce((sum, f) => sum + f.pageCount, 0);
+            const totalCopies = state.files.reduce((sum, f) => sum + f.copies, 0);
+
+            if (pricingTotalPages) {
+                pricingTotalPages.textContent = totalPrintPages !== totalDocPages 
+                    ? `${totalPrintPages} (of ${totalDocPages} total)`
+                    : `${totalPrintPages}`;
+            }
+
             document.getElementById('totalAmount').textContent = totalAmount;
 
             document.getElementById('summaryFile').textContent = `${state.files.length} Files`;
             document.getElementById('summaryPrinter').textContent = state.printerName;
             
-            const totalPages = state.files.reduce((sum, f) => sum + f.pageCount, 0);
-            const totalCopies = state.files.reduce((sum, f) => sum + f.copies, 0);
-            document.getElementById('summaryPages').textContent = `${totalPages} total pages`;
+            const pagesSummaryText = totalPrintPages !== totalDocPages 
+                ? `${totalPrintPages} pages (filtered from ${totalDocPages} total)`
+                : `${totalPrintPages} total pages`;
+
+            document.getElementById('summaryPages').textContent = pagesSummaryText;
             document.getElementById('summaryCopies').textContent = `${totalCopies} total copies`;
             document.getElementById('summaryTotal').textContent = totalAmount;
+
+            const breakdownEl = document.getElementById('summaryFilesBreakdown');
+            if (breakdownEl) {
+                breakdownEl.innerHTML = state.files.map(f => {
+                    const pagesToPrint = f.printPageCount !== undefined ? f.printPageCount : f.pageCount;
+                    const rangeLabel = (f.pageRange && f.pageRange !== 'all') ? `Pages: ${f.pageRange}` : 'All pages';
+                    const rate = getPricePerPage(f.color, f.duplex);
+                    const modeLabel = f.color 
+                        ? (f.duplex ? 'Color 2-Sided (₹10/p)' : 'Color 1-Sided (₹5/p)') 
+                        : (f.duplex ? 'B&W 2-Sided (₹2/p)' : 'B&W 1-Sided (₹2/p)');
+                    const cost = (pagesToPrint * rate) * f.copies;
+                    return `
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-secondary); padding: 0.15rem 0;">
+                            <span><b>${f.originalName}</b> <span style="font-size: 0.8rem; opacity: 0.85;">(${rangeLabel} · ${pagesToPrint} pgs · ${modeLabel} · ${f.copies}x)</span></span>
+                            <span style="font-weight: 600; color: var(--text-primary);">₹${cost}</span>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // Step 2 Button states based on validation
+            if (nextStep2Btn) {
+                nextStep2Btn.disabled = anyError;
+                if (anyError) {
+                    nextStep2Btn.title = 'Please fix page range errors';
+                } else {
+                    nextStep2Btn.title = '';
+                }
+            }
+            if (testPrintStep2Btn) {
+                testPrintStep2Btn.disabled = anyError;
+            }
         }
 
         // Create Razorpay order
@@ -556,7 +989,10 @@
                     document.getElementById('successJobId').textContent = data.batchId;
                     document.getElementById('successFile').textContent = `${state.files.length} Files`;
                     document.getElementById('successPrinter').textContent = state.printerName;
-                    document.getElementById('successCopies').textContent = '-';
+                    const totalPrintPages = state.files.reduce((sum, f) => sum + (f.printPageCount !== undefined ? f.printPageCount : f.pageCount), 0);
+                    const pagesEl = document.getElementById('successPages');
+                    if (pagesEl) pagesEl.textContent = `${totalPrintPages} pages`;
+                    document.getElementById('successCopies').textContent = `${state.files.reduce((sum, f) => sum + f.copies, 0)} copies`;
                     document.getElementById('successAmount').textContent = '0 (Free - Testing Phase)';
 
                     goToStep(4);
@@ -650,7 +1086,10 @@
                     document.getElementById('successJobId').textContent = data.batchId;
                     document.getElementById('successFile').textContent = `${state.files.length} Files`;
                     document.getElementById('successPrinter').textContent = state.printerName;
-                    document.getElementById('successCopies').textContent = '-';
+                    const totalPrintPages = state.files.reduce((sum, f) => sum + (f.printPageCount !== undefined ? f.printPageCount : f.pageCount), 0);
+                    const pagesEl = document.getElementById('successPages');
+                    if (pagesEl) pagesEl.textContent = `${totalPrintPages} pages`;
+                    document.getElementById('successCopies').textContent = `${state.files.reduce((sum, f) => sum + f.copies, 0)} copies`;
                     document.getElementById('successAmount').textContent = state.amount;
 
                     goToStep(4);

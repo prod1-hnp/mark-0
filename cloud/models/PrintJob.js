@@ -37,6 +37,14 @@ const printJobSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  pageRange: {
+    type: String,
+    default: 'all'  // e.g., 'all', '1-4', '1-4, 6-10', '3, 5, 7-12'
+  },
+  printPageCount: {
+    type: Number,
+    default: 0  // Actual pages to print (after page range applied)
+  },
   batchId: {
     type: String,
     default: null

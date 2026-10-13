@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import pdfParse from 'pdf-parse';
+import { PDFDocument } from 'pdf-lib';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import sharp from 'sharp';
@@ -103,7 +104,8 @@ function isPrinterMatch(targetName, registeredName) {
 function getSocketsForPrinter(printerName) {
   const sockets = [];
   for (const [socketId, printerInfo] of connectedPrinters) {
-    if (isPrinterMatch(printerName, printerInfo.printerName)) {
+    const hasInDiscovered = (printerInfo.discoveredPrinters || []).some(p => isPrinterMatch(printerName, p.name));
+    if (isPrinterMatch(printerName, printerInfo.printerName) || hasInDiscovered) {
       const socket = printerIO.sockets?.get(socketId);
       if (socket) sockets.push(socket);
     }
@@ -166,10 +168,43 @@ app.get('/api/config', (req, res) => {
 
 // Connected printers API
 app.get('/api/printers', (req, res) => {
-  const printers = Array.from(new Set(Array.from(connectedPrinters.values()).map(p => p.printerName)));
+  const agents = [];
+  for (const [socketId, info] of connectedPrinters) {
+    agents.push({
+      activePrinter: info.printerName,
+      platform: info.platform,
+      hostname: info.hostname,
+      connectedAt: info.connectedAt,
+      lastScanAt: info.lastScanAt || null,
+      discoveredPrinters: info.discoveredPrinters || []
+    });
+  }
+
+  // Flatten all discovered printers across all agents (deduplicate by name)
+  const allPrinters = new Map();
+  for (const agent of agents) {
+    for (const p of agent.discoveredPrinters) {
+      if (!allPrinters.has(p.name)) {
+        allPrinters.set(p.name, { ...p, hostname: agent.hostname });
+      }
+    }
+    // Also add the active printer name in case it's not in discovered list
+    if (!allPrinters.has(agent.activePrinter)) {
+      allPrinters.set(agent.activePrinter, {
+        name: agent.activePrinter,
+        driver: 'Unknown',
+        port: '',
+        status: 'ready',
+        isDefault: false,
+        hostname: agent.hostname
+      });
+    }
+  }
+
   res.json({
-    printers: printers,
-    count: printers.length
+    agents: agents,
+    printers: Array.from(allPrinters.values()),
+    count: allPrinters.size
   });
 });
 
@@ -228,6 +263,131 @@ async function processImageForBW(uploadedFilePath) {
     console.warn('B&W image processing failed, using original:', err.message);
     return null;
   }
+}
+
+// Parse and validate a page range string like "1-4, 6-10", "1-33", "1, 3, 5"
+function parsePageRange(rangeStr, totalPages) {
+  if (!rangeStr || typeof rangeStr !== 'string' || rangeStr.trim().toLowerCase() === 'all') {
+    return {
+      valid: true,
+      pages: Array.from({ length: totalPages }, (_, i) => i + 1),
+      pageIndices: Array.from({ length: totalPages }, (_, i) => i),
+      count: totalPages,
+      normalized: 'all',
+      error: null
+    };
+  }
+
+  const raw = rangeStr.trim();
+  const parts = raw.split(/[,;]/);
+  const selectedPages = new Set();
+
+  for (let part of parts) {
+    part = part.trim();
+    if (!part) continue;
+
+    const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    const singleMatch = part.match(/^(\d+)$/);
+
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+
+      if (start < 1) {
+        return { valid: false, error: `Page number ${start} must be at least 1` };
+      }
+      if (end > totalPages) {
+        return { valid: false, error: `Page ${end} exceeds total pages (${totalPages})` };
+      }
+      if (start > end) {
+        return { valid: false, error: `Invalid range "${part}": start (${start}) is greater than end (${end})` };
+      }
+      for (let p = start; p <= end; p++) {
+        selectedPages.add(p);
+      }
+    } else if (singleMatch) {
+      const page = parseInt(singleMatch[1], 10);
+      if (page < 1) {
+        return { valid: false, error: `Page number ${page} must be at least 1` };
+      }
+      if (page > totalPages) {
+        return { valid: false, error: `Page ${page} exceeds total pages (${totalPages})` };
+      }
+      selectedPages.add(page);
+    } else {
+      return { valid: false, error: `Invalid page format: "${part}". Use e.g. 1-4, 6-10` };
+    }
+  }
+
+  if (selectedPages.size === 0) {
+    return { valid: false, error: 'No valid pages selected' };
+  }
+
+  const sortedPages = Array.from(selectedPages).sort((a, b) => a - b);
+  const pageIndices = sortedPages.map(p => p - 1); // 0-indexed for pdf-lib
+
+  // Check if it represents all pages
+  const isAll = sortedPages.length === totalPages && sortedPages[0] === 1 && sortedPages[sortedPages.length - 1] === totalPages;
+
+  return {
+    valid: true,
+    pages: sortedPages,
+    pageIndices: pageIndices,
+    count: sortedPages.length,
+    normalized: isAll ? 'all' : raw,
+    error: null
+  };
+}
+
+// Extract specific pages from a PDF and save to a new sliced file
+async function extractPdfPages(sourceFilePath, pageIndices) {
+  try {
+    if (!fs.existsSync(sourceFilePath)) {
+      console.warn('extractPdfPages: Source file does not exist:', sourceFilePath);
+      return null;
+    }
+    const existingPdfBytes = fs.readFileSync(sourceFilePath);
+    const pdfDoc = await PDFDocument.load(existingPdfBytes);
+    const totalDocPages = pdfDoc.getPageCount();
+
+    // Clamp / validate indices
+    const validIndices = pageIndices.filter(i => i >= 0 && i < totalDocPages);
+    if (validIndices.length === 0) {
+      console.warn('extractPdfPages: No valid page indices, using original file');
+      return null;
+    }
+
+    const subDoc = await PDFDocument.create();
+    const copiedPages = await subDoc.copyPages(pdfDoc, validIndices);
+    copiedPages.forEach(p => subDoc.addPage(p));
+
+    const subPdfBytes = await subDoc.save();
+
+    const dir = path.dirname(sourceFilePath);
+    const ext = path.extname(sourceFilePath);
+    const baseName = path.basename(sourceFilePath, ext);
+    const outputPath = path.join(dir, `${baseName}_sliced_${Date.now()}${ext}`);
+
+    fs.writeFileSync(outputPath, subPdfBytes);
+    console.log(`✓ Sliced PDF created: ${path.basename(outputPath)} (${validIndices.length} of ${totalDocPages} pages)`);
+    return outputPath;
+  } catch (err) {
+    console.error('Error extracting PDF pages:', err.message);
+    return null; // fallback to original file if extraction fails
+  }
+}
+
+// Calculate price per page:
+// - Black & White (1-sided or duplex): ₹2/page (duplex does NOT double for B&W)
+// - Color (1-sided): ₹5/page
+// - Color (2-sided duplex): ₹10/page (doubled for color duplex)
+function getPricePerPage(isColor, isDuplex) {
+  const color = isColor === true || isColor === 'true';
+  const duplex = isDuplex === true || isDuplex === 'true';
+  if (color) {
+    return duplex ? 10 : 5;
+  }
+  return 2;
 }
 
 // Step 1: upload the files and count pages (if PDF)
@@ -295,20 +455,49 @@ app.post('/checkout-batch', async (req, res) => {
     const batchId = `batch_${Date.now()}`;
     let totalAmountInRupees = 0;
 
+    // Validate page ranges and calculate total amount based on selected pages
     for (const item of items) {
-      const pricePerPage = item.color ? 5 : 2;
-      totalAmountInRupees += (item.pageCount * pricePerPage) * item.copies;
+      const pricePerPage = getPricePerPage(item.color, item.duplex);
+      let effectivePageCount = item.pageCount || 1;
+
+      if (item.pageRange && item.pageRange !== 'all') {
+        const parsed = parsePageRange(item.pageRange, item.pageCount || 1);
+        if (parsed.valid) {
+          effectivePageCount = parsed.count;
+          item._parsedRange = parsed;
+        } else {
+          console.warn(`Invalid pageRange "${item.pageRange}" for ${item.originalName}: ${parsed.error}. Falling back to all pages.`);
+        }
+      }
+
+      item.effectivePageCount = effectivePageCount;
+      totalAmountInRupees += (effectivePageCount * pricePerPage) * (item.copies || 1);
     }
 
     if (autoPrint === 'true') {
       for (const item of items) {
-        const pricePerPage = item.color ? 5 : 2;
-        const amount = (item.pageCount * pricePerPage) * item.copies;
+        const pricePerPage = getPricePerPage(item.color, item.duplex);
+        const printPageCount = item.effectivePageCount || item.pageCount || 1;
+        const amount = (printPageCount * pricePerPage) * (item.copies || 1);
 
-        // If B&W selected, process image to remove gray backgrounds
         let filePath = `uploads/${item.fileId}`;
         let fileUrl = `/uploads/${item.fileId}`;
-        if (!item.color) {
+        const absOriginalPath = path.join(__dirname, filePath);
+        const ext = path.extname(item.originalName || item.fileId).toLowerCase();
+
+        // If PDF and custom page range selected, slice pages
+        if (ext === '.pdf' && item._parsedRange && item._parsedRange.normalized !== 'all') {
+          const sliced = await extractPdfPages(absOriginalPath, item._parsedRange.pageIndices);
+          if (sliced) {
+            const slicedRel = path.relative(__dirname, sliced).replace(/\\/g, '/');
+            filePath = slicedRel;
+            fileUrl = '/' + slicedRel;
+          }
+        }
+
+        // If B&W selected, process image to remove gray backgrounds
+        const isItemColor = item.color === true || item.color === 'true';
+        if (!isItemColor) {
           const processed = await processImageForBW(path.join(__dirname, filePath));
           if (processed) {
             const processedRelative = path.relative(__dirname, processed).replace(/\\/g, '/');
@@ -324,7 +513,9 @@ app.post('/checkout-batch', async (req, res) => {
           fileUrl: fileUrl,
           printerName: printerName,
           pageCount: item.pageCount,
-          copies: item.copies,
+          printPageCount: printPageCount,
+          pageRange: item._parsedRange ? item._parsedRange.normalized : (item.pageRange || 'all'),
+          copies: item.copies || 1,
           color: item.color,
           duplex: item.duplex || false,
           batchId: batchId,
@@ -346,14 +537,15 @@ app.post('/checkout-batch', async (req, res) => {
           copies: printJob.copies,
           color: printJob.color,
           duplex: printJob.duplex,
-          pageCount: printJob.pageCount
+          pageCount: printJob.printPageCount || printJob.pageCount,
+          pageRange: printJob.pageRange
         };
         if (targetSockets.length > 0) {
           targetSockets.forEach(s => s.emit('new-print-job', jobData));
         } else {
           console.warn(`⚠ No connected agent found for printer: ${printJob.printerName}`);
         }
-        console.log(`✓ Job dispatched for file ${item.originalName} (${item.copies} copies, color: ${item.color})`);
+        console.log(`✓ Job dispatched for file ${item.originalName} (${item.copies} copies, pages: ${printJob.pageRange} [${printJob.printPageCount}], color: ${item.color})`);
       }
 
       return res.json({
@@ -382,13 +574,28 @@ app.post('/checkout-batch', async (req, res) => {
     }
 
     for (const item of items) {
-      const pricePerPage = item.color ? 5 : 2;
-      const amount = (item.pageCount * pricePerPage) * item.copies;
+      const pricePerPage = getPricePerPage(item.color, item.duplex);
+      const printPageCount = item.effectivePageCount || item.pageCount || 1;
+      const amount = (printPageCount * pricePerPage) * (item.copies || 1);
 
-      // If B&W selected, process image to remove gray backgrounds
       let filePath = `uploads/${item.fileId}`;
       let fileUrl = `/uploads/${item.fileId}`;
-      if (!item.color) {
+      const absOriginalPath = path.join(__dirname, filePath);
+      const ext = path.extname(item.originalName || item.fileId).toLowerCase();
+
+      // If PDF and custom page range selected, slice pages
+      if (ext === '.pdf' && item._parsedRange && item._parsedRange.normalized !== 'all') {
+        const sliced = await extractPdfPages(absOriginalPath, item._parsedRange.pageIndices);
+        if (sliced) {
+          const slicedRel = path.relative(__dirname, sliced).replace(/\\/g, '/');
+          filePath = slicedRel;
+          fileUrl = '/' + slicedRel;
+        }
+      }
+
+      // If B&W selected, process image to remove gray backgrounds
+      const isItemColor = item.color === true || item.color === 'true';
+      if (!isItemColor) {
         const processed = await processImageForBW(path.join(__dirname, filePath));
         if (processed) {
           const processedRelative = path.relative(__dirname, processed).replace(/\\/g, '/');
@@ -404,7 +611,9 @@ app.post('/checkout-batch', async (req, res) => {
         fileUrl: fileUrl,
         printerName: printerName,
         pageCount: item.pageCount,
-        copies: item.copies,
+        printPageCount: printPageCount,
+        pageRange: item._parsedRange ? item._parsedRange.normalized : (item.pageRange || 'all'),
+        copies: item.copies || 1,
         color: item.color,
         duplex: item.duplex || false,
         batchId: batchId,
@@ -485,7 +694,8 @@ app.post('/verify-payment', async (req, res) => {
         copies: printJob.copies,
         color: printJob.color,
         duplex: printJob.duplex,
-        pageCount: printJob.pageCount
+        pageCount: printJob.printPageCount || printJob.pageCount,
+        pageRange: printJob.pageRange || 'all'
       };
       if (targetSockets.length > 0) {
         targetSockets.forEach(s => s.emit('new-print-job', jobData));
@@ -557,6 +767,7 @@ printerIO.on('connection', (socket) => {
         printerName: data.printerName,
         platform: data.platform || 'unknown',
         hostname: data.hostname || 'unknown',
+        discoveredPrinters: data.discoveredPrinters || [],
         connectedAt: new Date()
       });
 
@@ -569,7 +780,9 @@ printerIO.on('connection', (socket) => {
         });
 
         const pendingJobs = allPendingJobs.filter(job =>
-          isPrinterMatch(job.printerName, data.printerName) || connectedPrinters.size === 1
+          isPrinterMatch(job.printerName, data.printerName) ||
+          (data.discoveredPrinters || []).some(p => isPrinterMatch(job.printerName, p.name)) ||
+          connectedPrinters.size === 1
         );
 
         if (pendingJobs.length > 0) {
@@ -584,7 +797,8 @@ printerIO.on('connection', (socket) => {
               copies: printJob.copies,
               color: printJob.color,
               duplex: printJob.duplex,
-              pageCount: printJob.pageCount
+              pageCount: printJob.printPageCount || printJob.pageCount,
+              pageRange: printJob.pageRange || 'all'
             });
             console.log(`✓ Pending print job sent for job ${printJob._id}`);
           }
@@ -604,6 +818,19 @@ printerIO.on('connection', (socket) => {
       });
     } catch (error) {
       console.error('Failed to update job status:', error);
+    }
+  });
+
+  socket.on('printer-list-update', (data) => {
+    if (data && data.printerName) {
+      const existing = connectedPrinters.get(socket.id);
+      if (existing) {
+        existing.discoveredPrinters = data.discoveredPrinters || [];
+        existing.printerName = data.printerName;
+        existing.lastScanAt = new Date();
+        connectedPrinters.set(socket.id, existing);
+        console.log(`✓ Printer list updated from ${existing.hostname}: ${(data.discoveredPrinters || []).length} printer(s)`);
+      }
     }
   });
 

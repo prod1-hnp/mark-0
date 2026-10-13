@@ -1,0 +1,12 @@
+{
+  "name": "cloudprinter",
+  "version": "1.0.0",
+  "description": "Cloud Printer - Smart Printing System",
+  "scripts": {
+    "dev": "npm --prefix cloud run dev",
+    "start": "npm --prefix cloud start",
+    "cloud": "npm --prefix cloud start",
+    "cloud:dev": "npm --prefix cloud run dev",
+    "agent": "npm --prefix agent start"
+  }
+}
